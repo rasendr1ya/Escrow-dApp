@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { X, CheckCircle, AlertCircle, Info } from 'lucide-react';
 import ConnectWallet from './components/ConnectWallet';
@@ -84,10 +84,13 @@ function App() {
     }
   }, [account, fetchUserEscrows, selectedEscrow, addToast]);
 
+  const loadEscrowsRef = useRef(loadEscrows);
+  loadEscrowsRef.current = loadEscrows;
+
   // Initial loading when account/network changes
   useEffect(() => {
     if (account) {
-      loadEscrows(true);
+      loadEscrowsRef.current(true);
     } else {
       setEscrows([]);
       setSelectedEscrow(null);
