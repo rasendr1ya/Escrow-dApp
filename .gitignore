@@ -11,3 +11,7 @@ CONTEXT.md
 Langkah-Langkah-Pengerjaan-Escrow-dApp.md
 Panduan-Penggunaan-Escrow-dApp.md
 PRD-Tema-04-Simple-Escrow-dApp.md
+
+# Frontend build output
+frontend/dist
+frontend/node_modules

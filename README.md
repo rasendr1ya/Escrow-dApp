@@ -93,6 +93,7 @@ Escrow-dApp/
 │   │   ├── App.jsx                   # Main layout & pembagian kolom UI
 │   │   ├── index.css                 # Desain sistem Glassmorphism + HSL tokens
 │   │   └── main.jsx                  # React entrypoint
+```
 │   ├── index.html
 │   ├── tailwind.config.js
 │   ├── package.json
@@ -139,7 +140,7 @@ Terminal 1 — jalankan Hardhat node (biarkan berjalan):
 npx hardhat node
 ```
 
-*Catatan: Import minimal 3 private key pertama dari Hardhat node ke MetaMask Anda.*
+*Catatan: Impor minimal 3 private key pertama dari Hardhat node ke MetaMask Anda untuk akun Buyer (Account #0), Seller (Account #1), dan Arbiter (Account #2).*
 
 ### 5. Deploy Smart Contract ke Localhost
 
@@ -186,25 +187,7 @@ Buka browser: **http://localhost:5173**
 2. Tombol "Deposit Funds" muncul → masukkan jumlah ETH dan submit
 3. Setelah deposit sukses, tombol "Release Funds", "Raise Dispute", "Refund" muncul
 4. Switch ke Account #1 (Seller) → hanya bisa melihat status (read-only)
-5. Switch ke Account #2 (Arbiter) → tombol resolve muncul saat state DISPUTED
-6. Semua status transaksi ditampilkan via toast di bagian bawah layar
-
----
-
-## Alamat Kontrak Ter-deploy
-
-| Network | Chain ID | Kontrak | Alamat Kontrak | Link Explorer |
-|---------|----------|---------|----------------|---------------|
-| **Hardhat Localhost** | 31337 | `EscrowFactory` | `0x5FbDB2315678afecb367f032d93F642f64180aa3` | - |
-| **Sepolia Testnet** | 11155111 | `EscrowFactory` | `0x8509b207770b4fe56eB671cB37E493eC81ED354f` | [Etherscan Sepolia](https://sepolia.etherscan.io/address/0x8509b207770b4fe56eB671cB37E493eC81ED354f#code) |
-
----
-
-## Spesifikasi Kontrak Pintar
-
-| Komponen | Detail |
-|---|---|
-| State Variables | `buyer`, `seller`, `arbiter`, `depositAmount`, `currentState`, `deadline`, `arbiterFeePercent` |
+5. Swi| State Variables | `buyer`, `seller`, `arbiter`, `depositAmount`, `currentState`, `deadline`, `arbiterFeePercent` |
 | Functions | `deposit()`, `releaseFunds()`, `raiseDispute()`, `refundAfterTimeout()`, `resolveDispute()`, `getBalance()`, `isExpired()`, `getEscrowDetails()` |
 | Modifiers | `onlyBuyer`, `onlyArbiter`, `inState` |
 | Events | `Deposited`, `FundsReleased`, `DisputeRaised`, `Refunded`, `DisputeResolved` |
@@ -267,7 +250,7 @@ All files           |      100 |    86.76 |      100 |      100 |               
 
 Berikut adalah tangkapan layar antarmuka dApp untuk setiap skenario alur kerja transaksi:
 
-> 💡 **Catatan untuk Demo:** Tempatkan screenshot hasil uji coba Anda ke dalam folder `screenshots/` dengan nama file yang sesuai agar otomatis ter-render pada dokumen ini.
+> 💡 **Catatan untuk Demo:** Tempatkan screenshot hasil uji coba Anda ke dalam folder `screenshots/` dengan nama file yang sesuai agar otomatis ter-render pada dokumentasi ini.
 
 ### 1. Koneksi Wallet & Landing Page
 
@@ -351,4 +334,3 @@ Tampilan antarmuka yang responsif pada layar handphone/mobile.
 - [ ] **Frontend Hosting**
 
 *Total bonus poin yang berhasil dicapai: +10 Poin.*
-
