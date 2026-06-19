@@ -19,6 +19,7 @@ async function main() {
 
   const SimpleEscrow = await ethers.getContractFactory("SimpleEscrow");
   const escrow = await SimpleEscrow.connect(buyer).deploy(
+    buyer.address,
     seller.address,
     arbiter.address,
     DURATION,
@@ -81,6 +82,7 @@ async function main() {
 
   // Deploy escrow baru untuk demo 2
   const escrow2 = await SimpleEscrow.connect(buyer).deploy(
+    buyer.address,
     seller.address,
     arbiter.address,
     DURATION,

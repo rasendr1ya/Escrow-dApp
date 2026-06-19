@@ -92,23 +92,26 @@ contract SimpleEscrow {
     // ─── Constructor ──────────────────────────────────────────────────────────
 
     /**
+     * @param _buyer           Alamat buyer
      * @param _seller          Alamat seller
      * @param _arbiter         Alamat arbiter (bisa sama dengan deployer)
      * @param _durationSeconds Durasi escrow dalam detik sebelum bisa auto-refund
      * @param _arbiterFeePercent Persentase fee arbiter (0-10)
      */
     constructor(
+        address _buyer,
         address _seller,
         address _arbiter,
         uint256 _durationSeconds,
         uint256 _arbiterFeePercent
     ) {
+        require(_buyer != address(0), "Escrow: buyer is zero address");
         require(_seller != address(0), "Escrow: seller is zero address");
         require(_arbiter != address(0), "Escrow: arbiter is zero address");
-        require(_seller != msg.sender, "Escrow: buyer and seller cannot be the same");
+        require(_seller != _buyer, "Escrow: buyer and seller cannot be the same");
         require(_arbiterFeePercent <= 10, "Escrow: arbiter fee cannot exceed 10%");
 
-        buyer = msg.sender;
+        buyer = _buyer;
         seller = _seller;
         arbiter = _arbiter;
         arbiterFeePercent = _arbiterFeePercent;
@@ -148,7 +151,8 @@ contract SimpleEscrow {
         depositAmount = 0;
 
         emit FundsReleased(seller, amount);
-        payable(seller).transfer(amount);
+        (bool success, ) = payable(seller).call{value: amount}("");
+        require(success, "Escrow: Transfer to seller failed");
     }
 
     /**
@@ -183,7 +187,8 @@ contract SimpleEscrow {
         depositAmount = 0;
 
         emit Refunded(buyer, amount);
-        payable(buyer).transfer(amount);
+        (bool success, ) = payable(buyer).call{value: amount}("");
+        require(success, "Escrow: Refund to buyer failed");
     }
 
     /**
@@ -208,16 +213,19 @@ contract SimpleEscrow {
         if (releaseToSeller) {
             currentState = State.COMPLETE;
             emit DisputeResolved(seller, payout, fee);
-            payable(seller).transfer(payout);
+            (bool success, ) = payable(seller).call{value: payout}("");
+            require(success, "Escrow: Transfer to seller failed");
         } else {
             currentState = State.REFUNDED;
             emit DisputeResolved(buyer, payout, fee);
-            payable(buyer).transfer(payout);
+            (bool success, ) = payable(buyer).call{value: payout}("");
+            require(success, "Escrow: Refund to buyer failed");
         }
 
         // Transfer fee ke arbiter jika ada
         if (fee > 0) {
-            payable(arbiter).transfer(fee);
+            (bool successFee, ) = payable(arbiter).call{value: fee}("");
+            require(successFee, "Escrow: Fee transfer to arbiter failed");
         }
     }
 

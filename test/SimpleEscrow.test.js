@@ -16,8 +16,9 @@ describe("SimpleEscrow", function () {
     [buyer, seller, arbiter, other] = await ethers.getSigners();
 
     const SimpleEscrow = await ethers.getContractFactory("SimpleEscrow");
-    // buyer adalah deployer (msg.sender di constructor)
+    // buyer adalah parameter pertama yang dikirim
     escrow = await SimpleEscrow.connect(buyer).deploy(
+      buyer.address,
       seller.address,
       arbiter.address,
       DURATION,
@@ -60,7 +61,8 @@ describe("SimpleEscrow", function () {
       const SimpleEscrow = await ethers.getContractFactory("SimpleEscrow");
       await expect(
         SimpleEscrow.connect(buyer).deploy(
-          buyer.address, // same as deployer
+          buyer.address,
+          buyer.address, // same as buyer
           arbiter.address,
           DURATION,
           ARBITER_FEE
@@ -72,6 +74,7 @@ describe("SimpleEscrow", function () {
       const SimpleEscrow = await ethers.getContractFactory("SimpleEscrow");
       await expect(
         SimpleEscrow.connect(buyer).deploy(
+          buyer.address,
           seller.address,
           arbiter.address,
           DURATION,
@@ -119,6 +122,13 @@ describe("SimpleEscrow", function () {
         escrow.connect(buyer).deposit({ value: DEPOSIT_AMOUNT })
       ).to.be.revertedWith("Escrow: already deposited");
     });
+
+    it("should revert if deadline has passed", async function () {
+      await time.increase(DURATION + 1);
+      await expect(
+        escrow.connect(buyer).deposit({ value: DEPOSIT_AMOUNT })
+      ).to.be.revertedWith("Escrow: deadline has passed");
+    });
   });
 
   // ─── 3. Release Funds ────────────────────────────────────────────────────
@@ -164,6 +174,28 @@ describe("SimpleEscrow", function () {
       await escrow.connect(buyer).releaseFunds();
       expect(await escrow.depositAmount()).to.equal(0n);
     });
+
+    it("should revert if transfer to seller fails", async function () {
+      const Rejector = await ethers.getContractFactory("Rejector");
+      const rejector = await Rejector.deploy();
+      await rejector.waitForDeployment();
+      const rejectorAddress = await rejector.getAddress();
+
+      const SimpleEscrow = await ethers.getContractFactory("SimpleEscrow");
+      const failingEscrow = await SimpleEscrow.connect(buyer).deploy(
+        buyer.address,
+        rejectorAddress,
+        arbiter.address,
+        DURATION,
+        ARBITER_FEE
+      );
+      await failingEscrow.waitForDeployment();
+
+      await failingEscrow.connect(buyer).deposit({ value: DEPOSIT_AMOUNT });
+      await expect(
+        failingEscrow.connect(buyer).releaseFunds()
+      ).to.be.revertedWith("Escrow: Transfer to seller failed");
+    });
   });
 
   // ─── 4. Dispute ──────────────────────────────────────────────────────────
@@ -199,6 +231,7 @@ describe("SimpleEscrow", function () {
       // Deploy fresh contract tanpa deposit
       const SimpleEscrow = await ethers.getContractFactory("SimpleEscrow");
       const freshEscrow = await SimpleEscrow.connect(buyer).deploy(
+        buyer.address,
         seller.address,
         arbiter.address,
         DURATION,
@@ -298,6 +331,7 @@ describe("SimpleEscrow", function () {
       // Reset ke state AWAITING_DELIVERY (escrow baru)
       const SimpleEscrow = await ethers.getContractFactory("SimpleEscrow");
       const freshEscrow = await SimpleEscrow.connect(buyer).deploy(
+        buyer.address,
         seller.address,
         arbiter.address,
         DURATION,
@@ -308,6 +342,106 @@ describe("SimpleEscrow", function () {
       await expect(
         freshEscrow.connect(arbiter).resolveDispute(true)
       ).to.be.revertedWith("Escrow: invalid state for this action");
+    });
+
+    it("should revert if transfer to seller fails when arbiter rules in seller's favor", async function () {
+      const Rejector = await ethers.getContractFactory("Rejector");
+      const rejector = await Rejector.deploy();
+      await rejector.waitForDeployment();
+      const rejectorAddress = await rejector.getAddress();
+
+      const SimpleEscrow = await ethers.getContractFactory("SimpleEscrow");
+      const failingEscrow = await SimpleEscrow.connect(buyer).deploy(
+        buyer.address,
+        rejectorAddress,
+        arbiter.address,
+        DURATION,
+        ARBITER_FEE
+      );
+      await failingEscrow.waitForDeployment();
+
+      await failingEscrow.connect(buyer).deposit({ value: DEPOSIT_AMOUNT });
+      await failingEscrow.connect(buyer).raiseDispute();
+
+      await expect(
+        failingEscrow.connect(arbiter).resolveDispute(true)
+      ).to.be.revertedWith("Escrow: Transfer to seller failed");
+    });
+
+    it("should revert if refund to buyer fails when arbiter rules in buyer's favor", async function () {
+      const Rejector = await ethers.getContractFactory("Rejector");
+      const rejector = await Rejector.deploy();
+      await rejector.waitForDeployment();
+      const rejectorAddress = await rejector.getAddress();
+
+      const SimpleEscrow = await ethers.getContractFactory("SimpleEscrow");
+      const failingEscrow = await SimpleEscrow.connect(buyer).deploy(
+        rejectorAddress,
+        seller.address,
+        arbiter.address,
+        DURATION,
+        ARBITER_FEE
+      );
+      await failingEscrow.waitForDeployment();
+
+      const depositData = failingEscrow.interface.encodeFunctionData("deposit");
+      const raiseDisputeData = failingEscrow.interface.encodeFunctionData("raiseDispute");
+
+      await rejector.execute(await failingEscrow.getAddress(), depositData, DEPOSIT_AMOUNT, { value: DEPOSIT_AMOUNT });
+      await rejector.execute(await failingEscrow.getAddress(), raiseDisputeData, 0, { value: 0 });
+
+      await expect(
+        failingEscrow.connect(arbiter).resolveDispute(false)
+      ).to.be.revertedWith("Escrow: Refund to buyer failed");
+    });
+
+    it("should revert if fee transfer to arbiter fails", async function () {
+      const Rejector = await ethers.getContractFactory("Rejector");
+      const rejector = await Rejector.deploy();
+      await rejector.waitForDeployment();
+      const rejectorAddress = await rejector.getAddress();
+
+      const SimpleEscrow = await ethers.getContractFactory("SimpleEscrow");
+      const failingEscrow = await SimpleEscrow.connect(buyer).deploy(
+        buyer.address,
+        seller.address,
+        rejectorAddress,
+        DURATION,
+        ARBITER_FEE
+      );
+      await failingEscrow.waitForDeployment();
+
+      await failingEscrow.connect(buyer).deposit({ value: DEPOSIT_AMOUNT });
+      await failingEscrow.connect(buyer).raiseDispute();
+
+      const resolveData = failingEscrow.interface.encodeFunctionData("resolveDispute", [true]);
+      
+      await expect(
+        rejector.execute(await failingEscrow.getAddress(), resolveData, 0, { value: 0 })
+      ).to.be.revertedWith("Escrow: Fee transfer to arbiter failed");
+    });
+
+    it("should not transfer fee if arbiter fee is zero", async function () {
+      const SimpleEscrow = await ethers.getContractFactory("SimpleEscrow");
+      const zeroFeeEscrow = await SimpleEscrow.connect(buyer).deploy(
+        buyer.address,
+        seller.address,
+        arbiter.address,
+        DURATION,
+        0
+      );
+      await zeroFeeEscrow.waitForDeployment();
+
+      await zeroFeeEscrow.connect(buyer).deposit({ value: DEPOSIT_AMOUNT });
+      await zeroFeeEscrow.connect(buyer).raiseDispute();
+
+      const arbiterBalanceBefore = await ethers.provider.getBalance(arbiter.address);
+      const tx = await zeroFeeEscrow.connect(arbiter).resolveDispute(true);
+      const receipt = await tx.wait();
+      const gasUsed = receipt.gasUsed * receipt.gasPrice;
+      const arbiterBalanceAfter = await ethers.provider.getBalance(arbiter.address);
+
+      expect(arbiterBalanceBefore - arbiterBalanceAfter).to.equal(gasUsed);
     });
   });
 
@@ -355,6 +489,33 @@ describe("SimpleEscrow", function () {
       await expect(
         escrow.connect(other).refundAfterTimeout()
       ).to.be.revertedWith("Escrow: caller is not the buyer");
+    });
+
+    it("should revert if transfer to buyer fails", async function () {
+      const Rejector = await ethers.getContractFactory("Rejector");
+      const rejector = await Rejector.deploy();
+      await rejector.waitForDeployment();
+      const rejectorAddress = await rejector.getAddress();
+
+      const SimpleEscrow = await ethers.getContractFactory("SimpleEscrow");
+      const failingEscrow = await SimpleEscrow.connect(buyer).deploy(
+        rejectorAddress,
+        seller.address,
+        arbiter.address,
+        DURATION,
+        ARBITER_FEE
+      );
+      await failingEscrow.waitForDeployment();
+
+      const depositData = failingEscrow.interface.encodeFunctionData("deposit");
+      await rejector.execute(await failingEscrow.getAddress(), depositData, DEPOSIT_AMOUNT, { value: DEPOSIT_AMOUNT });
+
+      await time.increase(DURATION + 1);
+
+      const refundData = failingEscrow.interface.encodeFunctionData("refundAfterTimeout");
+      await expect(
+        rejector.execute(await failingEscrow.getAddress(), refundData, 0, { value: 0 })
+      ).to.be.revertedWith("Escrow: Refund to buyer failed");
     });
   });
 
