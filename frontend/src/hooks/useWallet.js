@@ -1,180 +1,134 @@
-import { useState, useEffect, useCallback } from "react";
-import { ethers } from "ethers";
-import { EXPECTED_CHAIN_ID, EXPECTED_CHAIN_NAME, EXPECTED_RPC_URL } from "../utils/helpers";
+import { useState, useEffect, useCallback } from 'react';
+import { ethers } from 'ethers';
 
-/**
- * useWallet — Mengelola koneksi MetaMask, network detection, dan event listener.
- *
- * State yang dikelola:
- *   - account: address wallet yang terkoneksi (string | null)
- *   - chainId: chain ID saat ini (number | null)
- *   - isCorrectNetwork: apakah wallet di network yang benar (Hardhat localhost 31337)
- *   - isConnecting: sedang proses connect (boolean)
- *   - error: pesan error jika ada (string | null)
- *
- * Event listener:
- *   - accountsChanged: detect user ganti akun di MetaMask → update account
- *   - chainChanged: detect user ganti network → update chainId
- */
-export function useWallet() {
-  const [account, setAccount] = useState(null);
+export default function useWallet() {
+  const [account, setAccount] = useState('');
   const [chainId, setChainId] = useState(null);
+  const [balance, setBalance] = useState('0.0');
+  const [provider, setProvider] = useState(null);
+  const [signer, setSigner] = useState(null);
   const [isConnecting, setIsConnecting] = useState(false);
-  const [error, setError] = useState(null);
 
-  // ── Helper: cek apakah MetaMask terinstall ──────────────────────────────
-  const hasMetaMask = typeof window !== "undefined" && window.ethereum;
+  const checkBalance = useCallback(async (addr, prov) => {
+    if (!addr || !prov) return;
+    try {
+      const bal = await prov.getBalance(addr);
+      setBalance(ethers.formatEther(bal));
+    } catch (err) {
+      console.error('Error fetching balance:', err);
+    }
+  }, []);
 
-  // ── Connect Wallet ──────────────────────────────────────────────────────
   const connectWallet = useCallback(async () => {
-    if (!hasMetaMask) {
-      setError("MetaMask tidak terdeteksi. Silakan install MetaMask extension terlebih dahulu.");
+    if (typeof window.ethereum === 'undefined') {
+      alert('MetaMask tidak ditemukan! Silakan instal ekstensi MetaMask browser Anda.');
       return;
     }
 
     setIsConnecting(true);
-    setError(null);
-
     try {
-      // Request akses akun dari MetaMask
-      const accounts = await window.ethereum.request({
-        method: "eth_requestAccounts",
-      });
+      // Initialize ethers BrowserProvider
+      const web3Provider = new ethers.BrowserProvider(window.ethereum);
+      setProvider(web3Provider);
 
-      const currentChainId = await window.ethereum.request({
-        method: "eth_chainId",
-      });
+      // Request accounts
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      if (accounts.length > 0) {
+        const activeAccount = accounts[0];
+        setAccount(activeAccount);
 
-      setAccount(accounts[0]);
-      setChainId(parseInt(currentChainId, 16));
-    } catch (err) {
-      if (err.code === 4001) {
-        setError("Koneksi wallet dibatalkan. Silakan coba lagi.");
-      } else {
-        setError("Gagal menghubungkan wallet: " + (err.message || "Unknown error"));
+        const web3Signer = await web3Provider.getSigner();
+        setSigner(web3Signer);
+
+        const network = await web3Provider.getNetwork();
+        // chainId is a bigint in ethers v6
+        setChainId(Number(network.chainId));
+
+        await checkBalance(activeAccount, web3Provider);
       }
+    } catch (error) {
+      console.error('Failed to connect wallet:', error);
     } finally {
       setIsConnecting(false);
     }
-  }, [hasMetaMask]);
+  }, [checkBalance]);
 
-  // ── Switch ke network yang benar ────────────────────────────────────────
-  const switchNetwork = useCallback(async () => {
-    if (!hasMetaMask) return;
-
-    try {
-      await window.ethereum.request({
-        method: "wallet_switchEthereumChain",
-        params: [{ chainId: "0x" + EXPECTED_CHAIN_ID.toString(16) }],
-      });
-    } catch (switchError) {
-      // Jika network belum ada di MetaMask, tambahkan dulu
-      if (switchError.code === 4902) {
-        try {
-          await window.ethereum.request({
-            method: "wallet_addEthereumChain",
-            params: [
-              {
-                chainId: "0x" + EXPECTED_CHAIN_ID.toString(16),
-                chainName: EXPECTED_CHAIN_NAME,
-                rpcUrls: [EXPECTED_RPC_URL],
-                nativeCurrency: {
-                  name: "ETH",
-                  symbol: "ETH",
-                  decimals: 18,
-                },
-              },
-            ],
-          });
-        } catch (addError) {
-          setError("Gagal menambahkan network ke MetaMask.");
-        }
-      } else {
-        setError("Gagal mengganti network di MetaMask.");
-      }
-    }
-  }, [hasMetaMask]);
-
-  // ── Disconnect (reset state) ────────────────────────────────────────────
   const disconnectWallet = useCallback(() => {
-    setAccount(null);
+    setAccount('');
     setChainId(null);
-    setError(null);
+    setBalance('0.0');
+    setProvider(null);
+    setSigner(null);
   }, []);
 
-  // ── Event Listeners: accountsChanged & chainChanged ─────────────────────
+  // Listen to accounts and network changes
   useEffect(() => {
-    if (!hasMetaMask) return;
+    if (typeof window.ethereum === 'undefined') return;
 
-    // Saat user mengganti akun di MetaMask
-    const handleAccountsChanged = (accounts) => {
-      if (accounts.length === 0) {
-        // User disconnect semua akun
-        disconnectWallet();
-      } else {
+    const handleAccountsChanged = async (accounts) => {
+      if (accounts.length > 0) {
         setAccount(accounts[0]);
+        if (provider) {
+          const web3Signer = await provider.getSigner();
+          setSigner(web3Signer);
+          await checkBalance(accounts[0], provider);
+        } else {
+          // Re-initialize if provider is lost
+          const web3Provider = new ethers.BrowserProvider(window.ethereum);
+          setProvider(web3Provider);
+          const web3Signer = await web3Provider.getSigner();
+          setSigner(web3Signer);
+          await checkBalance(accounts[0], web3Provider);
+        }
+      } else {
+        disconnectWallet();
       }
     };
 
-    // Saat user mengganti network di MetaMask
-    const handleChainChanged = (newChainId) => {
-      setChainId(parseInt(newChainId, 16));
+    const handleChainChanged = (_chainIdHex) => {
+      // Ethers recommends reloading page on chain change
+      window.location.reload();
     };
 
-    // Saat user disconnect dari MetaMask
-    const handleDisconnect = () => {
-      disconnectWallet();
-    };
+    window.ethereum.on('accountsChanged', handleAccountsChanged);
+    window.ethereum.on('chainChanged', handleChainChanged);
 
-    window.ethereum.on("accountsChanged", handleAccountsChanged);
-    window.ethereum.on("chainChanged", handleChainChanged);
-    window.ethereum.on("disconnect", handleDisconnect);
+    // Auto connect on load if already approved
+    window.ethereum.request({ method: 'eth_accounts' })
+      .then((accounts) => {
+        if (accounts.length > 0) {
+          connectWallet();
+        }
+      })
+      .catch((err) => console.error('Error checking autoconnect:', err));
 
     return () => {
-      window.ethereum.removeListener("accountsChanged", handleAccountsChanged);
-      window.ethereum.removeListener("chainChanged", handleChainChanged);
-      window.ethereum.removeListener("disconnect", handleDisconnect);
-    };
-  }, [hasMetaMask, disconnectWallet]);
-
-  // ── Auto-detect akun yang sudah terkoneksi (saat page load) ─────────────
-  useEffect(() => {
-    const checkConnection = async () => {
-      if (!hasMetaMask) return;
-
-      try {
-        const accounts = await window.ethereum.request({
-          method: "eth_accounts",
-        });
-        if (accounts.length > 0) {
-          setAccount(accounts[0]);
-
-          const currentChainId = await window.ethereum.request({
-            method: "eth_chainId",
-          });
-          setChainId(parseInt(currentChainId, 16));
-        }
-      } catch {
-        // Silent fail — user akan connect manual nanti
+      if (window.ethereum.removeListener) {
+        window.ethereum.removeListener('accountsChanged', handleAccountsChanged);
+        window.ethereum.removeListener('chainChanged', handleChainChanged);
       }
     };
+  }, [provider, connectWallet, disconnectWallet, checkBalance]);
 
-    checkConnection();
-  }, [hasMetaMask]);
+  // Periodic balance check
+  useEffect(() => {
+    if (!account || !provider) return;
+    const interval = setInterval(() => {
+      checkBalance(account, provider);
+    }, 10000); // Check balance every 10 seconds
 
-  // ── Derived: apakah network yang terkoneksi sesuai? ─────────────────────
-  const isCorrectNetwork = chainId === EXPECTED_CHAIN_ID;
+    return () => clearInterval(interval);
+  }, [account, provider, checkBalance]);
 
   return {
     account,
     chainId,
-    isCorrectNetwork,
+    balance,
+    provider,
+    signer,
     isConnecting,
-    error,
-    hasMetaMask,
     connectWallet,
     disconnectWallet,
-    switchNetwork,
-    setError,
+    refreshBalance: () => checkBalance(account, provider)
   };
 }

@@ -1,109 +1,79 @@
-import { useWallet } from "../hooks/useWallet";
-import { formatAddress } from "../utils/helpers";
+import React from 'react';
+import { Wallet, ShieldAlert, CheckCircle2, LogOut } from 'lucide-react';
 
-/**
- * ConnectWallet — Komponen wallet connection.
- *
- * Tiga state utama:
- * 1. MetaMask tidak terinstall → pesan install
- * 2. Belum connect → tombol connect
- * 3. Sudah connect → tampilkan address + role badge + disconnect
- *
- * Role ditentukan di level App.jsx dengan membandingkan account vs address
- * di contract (buyer/seller/arbiter).
- */
-export default function ConnectWallet({ userRole }) {
-  const {
-    account,
-    connectWallet,
-    disconnectWallet,
-    isConnecting,
-    hasMetaMask,
-    error,
-  } = useWallet();
+export default function ConnectWallet({ account, chainId, balance, isConnecting, connectWallet, disconnectWallet }) {
+  // Hardhat network id is 31337 (0x7a69), Sepolia is 11155111 (0xaa36a7)
+  const isCorrectNetwork = chainId === 31337 || chainId === 11155111 || !account;
 
-  // ── State 1: MetaMask tidak terdeteksi ──────────────────────────────────
-  if (!hasMetaMask) {
-    return (
-      <div className="flex items-center gap-3 px-5 py-3 bg-red-500/10 border border-red-500/20 rounded-full">
-        <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
-        <span className="text-red-400 text-sm font-mono tracking-wide uppercase">
-          Install MetaMask
-        </span>
-      </div>
-    );
-  }
-
-  // ── State 2: Belum connect ──────────────────────────────────────────────
-  if (!account) {
-    return (
-      <div className="flex items-center gap-3">
-        {error && (
-          <span className="text-red-400 text-xs font-mono mr-2">{error}</span>
-        )}
-        <button
-          onClick={connectWallet}
-          disabled={isConnecting}
-          className="px-6 py-3 bg-obsidian-neon text-black font-semibold rounded-full
-                     text-sm tracking-wide transition-all duration-200
-                     hover:bg-obsidian-neon-hover disabled:opacity-50
-                     disabled:cursor-not-allowed font-heading"
-        >
-          {isConnecting ? (
-            <span className="flex items-center gap-2">
-              <span className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
-              Connecting...
-            </span>
-          ) : (
-            "Connect Wallet"
-          )}
-        </button>
-      </div>
-    );
-  }
-
-  // ── State 3: Connected ──────────────────────────────────────────────────
-  const roleLabels = {
-    buyer: "Buyer",
-    seller: "Seller",
-    arbiter: "Arbiter",
-    unknown: "Viewer",
+  const truncateAddress = (addr) => {
+    if (!addr) return '';
+    return `${addr.substring(0, 6)}...${addr.substring(addr.length - 4)}`;
   };
 
-  const roleColors = {
-    buyer: "bg-obsidian-neon/10 text-obsidian-neon border-obsidian-neon/30",
-    seller: "bg-blue-400/10 text-blue-400 border-blue-400/30",
-    arbiter: "bg-purple-400/10 text-purple-400 border-purple-400/30",
-    unknown: "bg-gray-400/10 text-gray-400 border-gray-400/30",
+  const getNetworkName = (id) => {
+    if (id === 31337) return 'Hardhat Localhost';
+    if (id === 11155111) return 'Sepolia Testnet';
+    return 'Unknown Network';
   };
 
   return (
-    <div className="flex items-center gap-3">
-      {/* Role badge */}
-      <span
-        className={`px-3 py-1.5 text-xs font-mono uppercase tracking-wider
-                     rounded-full border ${roleColors[userRole] || roleColors.unknown}`}
-      >
-        {roleLabels[userRole]}
-      </span>
+    <div className="w-full">
+      {/* Network Warning Banner */}
+      {!isCorrectNetwork && (
+        <div className="w-full bg-red-500/10 border-b border-red-500/20 text-[#ef4444] px-4 py-2 text-sm flex items-center justify-center gap-2 backdrop-blur-md animate-pulse">
+          <ShieldAlert size={16} />
+          <span>Salah Jaringan! Hubungkan ke <strong>Hardhat Localhost</strong> atau <strong>Sepolia Testnet</strong>.</span>
+        </div>
+      )}
 
-      {/* Address display */}
-      <div className="flex items-center gap-2 px-4 py-2 bg-obsidian-surface rounded-full border border-white/5">
-        <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
-        <span className="text-sm font-mono text-gray-300">
-          {formatAddress(account)}
-        </span>
-      </div>
+      <header className="glass-card mx-2 my-2 md:mx-4 md:my-4 p-3 md:p-4 flex flex-col md:flex-row items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-purple-500 to-indigo-600 flex items-center justify-center text-white font-bold shadow-lg shadow-purple-500/20 font-sans tracking-tight">
+            TM
+          </div>
+          <div>
+            <h1 className="text-xl font-bold tracking-tighter bg-gradient-to-r from-purple-300 via-indigo-300 to-emerald-300 bg-clip-text text-transparent m-0 font-sans uppercase">
+              TRUST MESH
+            </h1>
+            <span className="text-[10px] text-gray-400 font-mono tracking-widest block uppercase mt-0.5">P2P DECENTRALIZED PROTOCOL</span>
+          </div>
+        </div>
 
-      {/* Disconnect button */}
-      <button
-        onClick={disconnectWallet}
-        className="px-3 py-2 text-xs font-mono text-gray-500 hover:text-red-400
-                   transition-colors duration-200 rounded-full hover:bg-red-500/5"
-        title="Disconnect wallet"
-      >
-        ✕
-      </button>
+        <div className="flex items-center gap-4">
+          {account ? (
+            <div className="flex items-center gap-3">
+              <div className="hidden md:flex flex-col text-right">
+                <span className="text-xs text-gray-400 flex items-center gap-1 justify-end">
+                  <CheckCircle2 size={12} className="text-green-500" />
+                  {getNetworkName(chainId)}
+                </span>
+                <span className="text-sm font-semibold">{parseFloat(balance).toFixed(4)} ETH</span>
+              </div>
+              
+              <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-4 py-2">
+                <Wallet size={16} className="text-purple-400" />
+                <span className="text-sm font-mono">{truncateAddress(account)}</span>
+                <button 
+                  onClick={disconnectWallet}
+                  className="ml-2 p-1 hover:bg-white/10 rounded-lg text-gray-400 hover:text-white transition-colors"
+                  title="Disconnect Wallet"
+                >
+                  <LogOut size={14} />
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={connectWallet}
+              disabled={isConnecting}
+              className="btn-primary flex items-center gap-2"
+            >
+              <Wallet size={18} />
+              {isConnecting ? 'Menghubungkan...' : 'Hubungkan Dompet'}
+            </button>
+          )}
+        </div>
+      </header>
     </div>
   );
 }

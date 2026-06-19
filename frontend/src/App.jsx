@@ -1,236 +1,357 @@
-import { useState, useCallback, useEffect } from "react";
-import { ethers } from "ethers";
-import { useWallet } from "./hooks/useWallet";
-import { useContract } from "./hooks/useContract";
-import { getUserRole } from "./utils/helpers";
-import { CONTRACT_ADDRESS, CONTRACT_ABI } from "./utils/contract";
+import React, { useState, useEffect, useCallback } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { X, CheckCircle, AlertCircle, Info } from 'lucide-react';
+import ConnectWallet from './components/ConnectWallet';
+import CreateEscrowForm from './components/CreateEscrowForm';
+import EscrowList from './components/EscrowList';
+import EscrowDetail from './components/EscrowDetail';
+import useWallet from './hooks/useWallet';
+import useContract from './hooks/useContract';
 
-import ConnectWallet from "./components/ConnectWallet";
-import EscrowOverview from "./components/EscrowOverview";
-import ActionPanel from "./components/ActionPanel";
-import NetworkStatusCard from "./components/NetworkStatusCard";
-import EscrowDetailsCard from "./components/EscrowDetailsCard";
-import SecurityProtocolCard from "./components/SecurityProtocolCard";
-import TransactionToast from "./components/TransactionToast";
-
-/**
- * App — Root component Simple Escrow dApp.
- *
- * Layout: 2 kolom di desktop, 1 kolom di mobile.
- *   - Kolom kiri (main): ConnectWallet + EscrowOverview (hero) + ActionPanel
- *   - Kolom kanan (sidebar): NetworkStatus + EscrowDetails + SecurityProtocol
- *
- * Web3 flow:
- *   1. useWallet() → manage MetaMask connection, network, account
- *   2. useContract() → read data dari blockchain, write transaksi
- *   3. getUserRole() → deteksi role (buyer/seller/arbiter/unknown) dari account vs contract
- */
-export default function App() {
-  // ── Wallet state ────────────────────────────────────────────────────────
+function App() {
+  // Real Web3 wallet hook
   const {
     account,
     chainId,
-    isCorrectNetwork,
-    isConnecting: walletConnecting,
-    error: walletError,
-    hasMetaMask,
+    balance,
+    provider,
+    signer,
+    isConnecting,
     connectWallet,
     disconnectWallet,
-    switchNetwork,
+    refreshBalance
   } = useWallet();
 
-  // ── Contract state ──────────────────────────────────────────────────────
+  // Real Web3 contract hooks
   const {
-    escrowData,
-    isLoading: contractLoading,
-    readError,
+    createEscrow,
+    fetchUserEscrows,
     deposit,
     releaseFunds,
     raiseDispute,
     refundAfterTimeout,
     resolveDispute,
-    txStatus,
-    txError,
-    txSuccessMsg,
-    lastAction,
-    refreshAllData,
-  } = useContract();
+    fetchEscrowEvents
+  } = useContract(provider, signer, account);
 
-  // ── Derived state ───────────────────────────────────────────────────────
-  const userRole = getUserRole(account, {
-    buyer: escrowData?.buyer,
-    seller: escrowData?.seller,
-    arbiter: escrowData?.arbiter,
-  });
+  // States
+  const [escrows, setEscrows] = useState([]);
+  const [selectedEscrow, setSelectedEscrow] = useState(null);
+  const [isCreating, setIsCreating] = useState(false);
+  const [isActionPending, setIsActionPending] = useState(false);
+  const [isLoadingEscrows, setIsLoadingEscrows] = useState(false);
+  const [toasts, setToasts] = useState([]);
+  const [selectedEscrowEvents, setSelectedEscrowEvents] = useState([]);
 
-  const [isExpired, setIsExpired] = useState(false);
-
-  // Fetch isExpired setiap kali escrowData berubah
-  useEffect(() => {
-    const checkExpired = async () => {
-      if (!escrowData || !hasMetaMask) return;
-      try {
-        const provider = new ethers.BrowserProvider(window.ethereum);
-        const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
-        const expired = await contract.isExpired();
-        setIsExpired(expired);
-      } catch {
-        setIsExpired(false);
-      }
-    };
-    checkExpired();
-  }, [escrowData, hasMetaMask]);
-
-  // ── Dismiss toast ───────────────────────────────────────────────────────
-  const dismissToast = useCallback(() => {
-    // txStatus akan auto-clear dari useContract setelah timeout,
-    // tapi kita bisa dismiss manual via tombol close
-    // (state internal di useContract tidak bisa di-reset dari luar,
-    //  tapi auto-clear sudah cukup — ini placeholder untuk tombol close)
+  // Toast helper
+  const addToast = useCallback((type, message) => {
+    const id = Date.now() + Math.random().toString(36).substr(2, 9);
+    setToasts((prev) => [...prev, { id, type, message }]);
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 5000);
   }, []);
 
+  const removeToast = (id) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  // Fetch all escrows for the connected wallet
+  const loadEscrows = useCallback(async (showLoading = false) => {
+    if (!account) {
+      setEscrows([]);
+      return;
+    }
+    if (showLoading) setIsLoadingEscrows(true);
+    try {
+      const data = await fetchUserEscrows();
+      setEscrows(data);
+      
+      // If we have a selected escrow, refresh its details too
+      if (selectedEscrow) {
+        const updated = data.find((esc) => esc.address.toLowerCase() === selectedEscrow.address.toLowerCase());
+        if (updated) {
+          setSelectedEscrow(updated);
+        }
+      }
+    } catch (err) {
+      console.error('Error loading escrows:', err);
+      addToast('error', 'Gagal memuat daftar transaksi escrow dari blockchain.');
+    } finally {
+      if (showLoading) setIsLoadingEscrows(false);
+    }
+  }, [account, fetchUserEscrows, selectedEscrow, addToast]);
+
+  // Initial loading when account/network changes
+  useEffect(() => {
+    if (account) {
+      loadEscrows(true);
+    } else {
+      setEscrows([]);
+      setSelectedEscrow(null);
+    }
+  }, [account, chainId]);
+  
+  // Load events for selected escrow
+  useEffect(() => {
+    let active = true;
+    const loadEvents = async () => {
+      if (!selectedEscrow) {
+        setSelectedEscrowEvents([]);
+        return;
+      }
+      try {
+        const events = await fetchEscrowEvents(selectedEscrow.address);
+        if (active) setSelectedEscrowEvents(events);
+      } catch (err) {
+        console.error('Failed to load escrow events:', err);
+      }
+    };
+    loadEvents();
+    return () => { active = false; };
+  }, [selectedEscrow, fetchEscrowEvents]);
+
+  // Handle Escrow creation
+  const handleCreateEscrow = async (params) => {
+    setIsCreating(true);
+    addToast('info', 'Meminta persetujuan pembuatan Escrow di MetaMask...');
+    try {
+      const newEscrowAddress = await createEscrow(
+        params.seller,
+        params.arbiter,
+        params.durationSeconds,
+        params.arbiterFeePercent
+      );
+      
+      if (newEscrowAddress) {
+        addToast('success', `Escrow berhasil dibuat di alamat: ${newEscrowAddress.substring(0, 10)}...`);
+        // Refresh the list
+        await loadEscrows(true);
+      } else {
+        addToast('error', 'Gagal mendapatkan alamat escrow yang baru dibuat.');
+      }
+    } catch (err) {
+      console.error('Error creating escrow:', err);
+      const msg = err.message || '';
+      if (msg.includes('user rejected')) {
+        addToast('error', 'Transaksi dibatalkan oleh pengguna.');
+      } else {
+        addToast('error', 'Terjadi kesalahan saat membuat Escrow contract.');
+      }
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  // Handle Escrow actions (deposit, release, dispute, refund, resolve)
+  const handleEscrowAction = async (actionType, args) => {
+    if (!selectedEscrow) return;
+    setIsActionPending(true);
+    addToast('info', `Memproses transaksi ${actionType}... Hubungkan MetaMask.`);
+
+    try {
+      let receipt;
+      if (actionType === 'deposit') {
+        receipt = await deposit(selectedEscrow.address, args.value);
+        addToast('success', `Dana sebesar ${args.value} ETH berhasil didepositkan.`);
+      } else if (actionType === 'releaseFunds') {
+        receipt = await releaseFunds(selectedEscrow.address);
+        addToast('success', 'Dana berhasil dirilis ke Penjual.');
+      } else if (actionType === 'raiseDispute') {
+        receipt = await raiseDispute(selectedEscrow.address);
+        addToast('success', 'Sengketa berhasil diajukan. Status diubah menjadi DISPUTED.');
+      } else if (actionType === 'refundAfterTimeout') {
+        receipt = await refundAfterTimeout(selectedEscrow.address);
+        addToast('success', 'Dana berhasil di-refund kembali ke dompet Pembeli.');
+      } else if (actionType === 'resolveDispute') {
+        receipt = await resolveDispute(selectedEscrow.address, args.releaseToSeller);
+        addToast('success', `Keputusan sengketa berhasil dieksekusi: ${args.releaseToSeller ? 'Diberikan ke Seller' : 'Refund ke Buyer'}.`);
+      }
+
+      // Refresh wallet balance and contract state
+      await refreshBalance();
+      await loadEscrows(false);
+      
+      // Refresh events
+      if (selectedEscrow) {
+        const events = await fetchEscrowEvents(selectedEscrow.address);
+        setSelectedEscrowEvents(events);
+      }
+    } catch (err) {
+      console.error(`Error executing action ${actionType}:`, err);
+      const msg = err.message || '';
+      if (msg.includes('user rejected')) {
+        addToast('error', 'Transaksi dibatalkan oleh pengguna.');
+      } else {
+        addToast('error', `Transaksi gagal: ${err.reason || 'Terjadi error pada blockchain.'}`);
+      }
+    } finally {
+      setIsActionPending(false);
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-obsidian-bg font-body">
-      {/* ── Header ──────────────────────────────────────────────────────── */}
-      <header className="sticky top-0 z-40 bg-obsidian-bg/80 backdrop-blur-xl border-b border-white/5">
-        <div className="max-w-app mx-auto px-4 md:px-margin-desktop py-4 flex items-center justify-between">
-          {/* Logo / Title */}
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-obsidian-neon flex items-center justify-center">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-                   stroke="#0A0A0A" strokeWidth="2.5" strokeLinecap="round">
-                <rect x="3" y="11" width="18" height="11" rx="2" />
-                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-              </svg>
+    <div className="container min-h-screen flex flex-col justify-start">
+      {/* Decorative Glowing Blobs */}
+      <div className="glow-blob-purple"></div>
+      <div className="glow-blob-green"></div>
+      <div className="watermark-bg">Trust Mesh</div>
+
+      {/* Floating Toast Notification System */}
+      <div className="fixed top-4 right-4 z-50 flex flex-col gap-3 max-w-sm w-full pointer-events-none">
+        <AnimatePresence>
+          {toasts.map((toast) => (
+            <motion.div
+              key={toast.id}
+              initial={{ opacity: 0, y: -20, scale: 0.95 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9, y: -10 }}
+              className={`glass-toast p-4 rounded-xl border pointer-events-auto shadow-lg flex items-start justify-between gap-3 ${
+                toast.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-300' :
+                toast.type === 'error' ? 'bg-red-500/10 border-red-500/20 text-red-300' :
+                toast.type === 'info' ? 'bg-purple-500/10 border-purple-500/20 text-purple-300' :
+                'bg-white/10 border-white/20 text-gray-200'
+              }`}
+            >
+              <div className="flex items-center gap-2 mt-0.5 shrink-0">
+                {toast.type === 'success' && <CheckCircle size={16} className="text-emerald-400" />}
+                {toast.type === 'error' && <AlertCircle size={16} className="text-red-400" />}
+                {toast.type === 'info' && <Info size={16} className="text-purple-400" />}
+              </div>
+              <div className="text-xs font-semibold leading-relaxed flex-grow text-left">
+                {toast.message}
+              </div>
+              <button
+                onClick={() => removeToast(toast.id)}
+                className="text-gray-400 hover:text-white transition-colors shrink-0"
+              >
+                <X size={14} />
+              </button>
+            </motion.div>
+          ))}
+        </AnimatePresence>
+      </div>
+
+      {/* Connect Wallet / Navbar */}
+      <ConnectWallet
+        account={account}
+        chainId={chainId}
+        balance={balance}
+        isConnecting={isConnecting}
+        connectWallet={connectWallet}
+        disconnectWallet={disconnectWallet}
+      />
+
+      {!account ? (
+        <div className="flex-grow flex flex-col justify-center items-center py-16 px-4 text-center max-w-4xl mx-auto z-10 relative">
+          <div className="mb-4 inline-flex items-center gap-2 px-3 py-1 rounded-full bg-purple-500/10 border border-purple-500/20 text-purple-300 text-xs font-mono tracking-wider uppercase animate-pulse">
+            ⚡ Decentralized P2P Escrow Protocol
+          </div>
+          
+          <h1 className="text-5xl md:text-7xl font-extrabold tracking-tight bg-gradient-to-r from-purple-400 via-indigo-300 to-emerald-400 bg-clip-text text-transparent mb-6 uppercase font-sans">
+            TRUST MESH
+          </h1>
+          
+          <p className="text-base md:text-lg text-gray-300 leading-relaxed mb-10 max-w-2xl font-light">
+            Secure peer-to-peer exchanges with zero-trust smart contracts. Lock your funds, verify the delivery, and resolve disputes transparently using on-chain arbiters.
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 w-full mb-12 text-left">
+            <div className="glass-card p-6 border-l-2 border-l-indigo-500 asymmetric-card interactive-panel">
+              <div className="h-8 w-8 rounded-lg bg-indigo-500/10 flex items-center justify-center text-indigo-400 mb-4 font-mono font-bold">
+                01
+              </div>
+              <h3 className="text-lg font-bold text-gray-100 mb-2 font-sans">Buyer</h3>
+              <p className="text-xs text-gray-400 leading-relaxed">
+                Membuat kontrak escrow, mendepositkan dana ETH secara aman, dan merilisnya ke Penjual setelah barang/jasa diterima dengan baik.
+              </p>
             </div>
-            <div>
-              <h1 className="text-sm font-heading font-bold text-white tracking-tight">
-                Simple Escrow
-              </h1>
-              <p className="text-[10px] font-mono uppercase tracking-[0.15em] text-gray-500">
-                Decentralized Trust
+
+            <div className="glass-card p-6 border-l-2 border-l-emerald-500 asymmetric-card interactive-panel">
+              <div className="h-8 w-8 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 mb-4 font-mono font-bold">
+                02
+              </div>
+              <h3 className="text-lg font-bold text-gray-100 mb-2 font-sans">Seller</h3>
+              <p className="text-xs text-gray-400 leading-relaxed">
+                Menerima notifikasi dana terkunci di blockchain, mengirimkan barang/jasa dengan aman, dan menerima ETH setelah rilis dana.
+              </p>
+            </div>
+
+            <div className="glass-card p-6 border-l-2 border-l-amber-500 asymmetric-card interactive-panel">
+              <div className="h-8 w-8 rounded-lg bg-amber-500/10 flex items-center justify-center text-amber-400 mb-4 font-mono font-bold">
+                03
+              </div>
+              <h3 className="text-lg font-bold text-gray-100 mb-2 font-sans">Arbiter</h3>
+              <p className="text-xs text-gray-400 leading-relaxed">
+                Pihak ketiga independen yang ditunjuk untuk menganalisis sengketa dan merilis dana ke pemenang sengketa secara adil.
               </p>
             </div>
           </div>
 
-          {/* Wallet Connection */}
-          <ConnectWallet userRole={userRole} />
+          <button
+            onClick={connectWallet}
+            disabled={isConnecting}
+            className="btn-primary px-8 py-4 text-sm flex items-center gap-3 font-semibold shadow-lg shadow-purple-500/30 hover:scale-105 transition-all duration-300"
+          >
+            <X size={16} className="rotate-45" />
+            {isConnecting ? 'Menghubungkan MetaMask...' : 'Mulai Hubungkan Dompet'}
+          </button>
         </div>
-      </header>
-
-      {/* ── Warning banner (wallet error / wrong network) ──────────────── */}
-      {account && !isCorrectNetwork && (
-        <div className="bg-red-500/10 border-b border-red-500/20 px-4 py-3">
-          <div className="max-w-app mx-auto flex items-center justify-between">
-            <p className="text-xs font-mono text-red-400 uppercase tracking-wider">
-              Wrong Network — Harap ganti ke Hardhat Localhost (Chain ID: 31337)
-            </p>
-            <button
-              onClick={switchNetwork}
-              className="px-4 py-1.5 text-xs font-mono text-red-400 border border-red-400/30
-                         rounded-full hover:bg-red-400/10 transition-colors"
-            >
-              Switch Network
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Main Content ────────────────────────────────────────────────── */}
-      <main className="max-w-app mx-auto px-4 md:px-margin-desktop py-8 md:py-12">
-        <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
-          {/* ── Kolom Kiri: Escrow Overview + Action Panel ────────────── */}
-          <div className="flex-1 lg:max-w-[65%] space-y-6">
-            {/* Escrow Overview (hero card) */}
-            <EscrowOverview
-              escrowData={escrowData}
-              isExpired={isExpired}
-              userRole={userRole}
-              isLoading={contractLoading}
-            />
-
-            {/* Action Panel */}
-            {account && isCorrectNetwork && (
-              <ActionPanel
-                userRole={userRole}
-                escrowData={escrowData}
-                isExpired={isExpired}
-                onDeposit={deposit}
-                onRelease={releaseFunds}
-                onDispute={raiseDispute}
-                onRefund={refundAfterTimeout}
-                onResolve={resolveDispute}
-                txStatus={txStatus}
+      ) : (
+        <main className="w-full flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6 px-4 py-4">
+          {/* Left Side: Create Form & List */}
+          <div className="lg:col-span-7 flex flex-col gap-6">
+            {account && (
+              <CreateEscrowForm 
+                createEscrow={handleCreateEscrow} 
+                isCreating={isCreating} 
               />
             )}
 
-            {/* Prompt connect wallet jika belum connect */}
-            {!account && (
-              <div className="rounded-[2.5rem] bg-obsidian-card border border-white/5 p-10 text-center">
-                <p className="text-sm text-gray-400 font-body mb-4">
-                  Hubungkan wallet MetaMask Anda untuk melihat dan berinteraksi dengan escrow.
-                </p>
-                <button
-                  onClick={connectWallet}
-                  disabled={walletConnecting}
-                  className="px-8 py-3 bg-obsidian-neon text-black font-semibold rounded-full
-                             text-sm tracking-wide transition-all duration-200
-                             hover:bg-obsidian-neon-hover disabled:opacity-50 font-heading"
-                >
-                  {walletConnecting ? "Connecting..." : "Connect Wallet"}
-                </button>
-                {walletError && (
-                  <p className="text-xs text-red-400 font-mono mt-3">{walletError}</p>
+            <div className="glass-card asymmetric-card p-6 flex flex-col gap-4">
+              <div className="flex justify-between items-center mb-2">
+                <h2 className="text-xl font-bold m-0 bg-gradient-to-r from-purple-200 to-indigo-200 bg-clip-text text-transparent">
+                  Daftar Transaksi Escrow Anda
+                </h2>
+                {account && (
+                  <button
+                    onClick={() => loadEscrows(true)}
+                    className="text-xs text-purple-400 hover:text-purple-300 font-semibold bg-white/5 border border-white/5 px-3 py-1.5 rounded-xl hover:bg-white/10 transition-colors"
+                  >
+                    Segarkan Data
+                  </button>
                 )}
               </div>
-            )}
-
-            {/* Read error */}
-            {readError && (
-              <div className="rounded-2xl bg-red-500/5 border border-red-500/15 p-4">
-                <p className="text-xs font-mono text-red-400 uppercase tracking-wider mb-1">
-                  Read Error
-                </p>
-                <p className="text-sm text-red-300/80 font-body">{readError}</p>
-              </div>
-            )}
+              <EscrowList
+                escrows={escrows}
+                selectedEscrow={selectedEscrow}
+                onSelectEscrow={setSelectedEscrow}
+                account={account}
+                isLoading={isLoadingEscrows}
+              />
+            </div>
           </div>
 
-          {/* ── Kolom Kanan: Sidebar ──────────────────────────────────── */}
-          <div className="lg:w-[35%] space-y-5">
-            <NetworkStatusCard
-              chainId={chainId}
-              isCorrectNetwork={isCorrectNetwork}
-              switchNetwork={switchNetwork}
-              hasMetaMask={hasMetaMask}
+          {/* Right Side: Detail View */}
+          <div className="lg:col-span-5">
+            <EscrowDetail
+              escrow={selectedEscrow}
+              account={account}
+              onAction={handleEscrowAction}
+              isActionPending={isActionPending}
+              events={selectedEscrowEvents}
             />
-            <EscrowDetailsCard
-              escrowData={escrowData}
-              isExpired={isExpired}
-              isLoading={contractLoading}
-            />
-            <SecurityProtocolCard />
           </div>
-        </div>
-      </main>
+        </main>
+      )}
 
-      {/* ── Transaction Toast ────────────────────────────────────────────── */}
-      <TransactionToast
-        txStatus={txStatus}
-        txError={txError}
-        txSuccessMsg={txSuccessMsg}
-        lastAction={lastAction}
-        onDismiss={dismissToast}
-      />
-
-      {/* ── Footer ───────────────────────────────────────────────────────── */}
-      <footer className="border-t border-white/5 py-6 mt-12">
-        <div className="max-w-app mx-auto px-4 md:px-margin-desktop text-center">
-          <p className="text-[10px] font-mono uppercase tracking-[0.15em] text-gray-600">
-            Simple Escrow dApp &middot; Blockchain Project 3 &middot; ITS Teknologi Blockchain 2025
-          </p>
-        </div>
+      <footer className="mt-12 mb-6 text-center text-xs text-gray-500 border-t border-white/5 pt-4">
+        &copy; {new Date().getFullYear()} Simple Escrow dApp. Build for Blockchain Technology course final project.
       </footer>
     </div>
   );
 }
+
+export default App;

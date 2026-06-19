@@ -1,256 +1,178 @@
-import { useState, useCallback, useEffect } from "react";
-import { ethers } from "ethers";
-import { CONTRACT_ADDRESS, CONTRACT_ABI } from "../utils/contract";
-import { parseContractError, getSuccessMessage } from "../utils/errors";
+import { useCallback, useMemo } from 'react';
+import { ethers } from 'ethers';
+import contractsData from '../utils/contracts.json';
 
-/**
- * useContract — Hook utama untuk interaksi read & write dengan SimpleEscrow.
- *
- * Read operations (pakai Provider — tidak perlu signer / gratis):
- *   - fetchEscrowDetails() → getEscrowDetails()
- *   - fetchBalance()       → getBalance()
- *   - fetchIsExpired()     → isExpired()
- *
- * Write operations (pakai Signer — perlu MetaMask confirm):
- *   - deposit(amountETH)   → deposit()
- *   - releaseFunds()       → releaseFunds()
- *   - raiseDispute()       → raiseDispute()
- *   - refundAfterTimeout() → refundAfterTimeout()
- *   - resolveDispute(releaseToSeller) → resolveDispute(bool)
- *
- * State transaksi:
- *   idle → pending → success/failed
- */
-export function useContract() {
-  // Escrow data (dari read operations)
-  const [escrowData, setEscrowData] = useState(null);
-  // Loading untuk read operations
-  const [isLoading, setIsLoading] = useState(false);
-  // Error untuk read operations
-  const [readError, setReadError] = useState(null);
-
-  // Transaction state
-  const [txStatus, setTxStatus] = useState("idle"); // "idle" | "pending" | "success" | "failed"
-  const [txError, setTxError] = useState(null);
-  const [txSuccessMsg, setTxSuccessMsg] = useState(null);
-  const [lastAction, setLastAction] = useState(null); // untuk toast
-
-  // ── Helper: dapatkan provider read-only ──────────────────────────────────
-  const getProvider = useCallback(() => {
-    if (typeof window === "undefined" || !window.ethereum) return null;
-    return new ethers.BrowserProvider(window.ethereum);
-  }, []);
-
-  // ── Helper: dapatkan signer (untuk write) ───────────────────────────────
-  const getSigner = useCallback(async () => {
-    if (typeof window === "undefined" || !window.ethereum) return null;
-    const provider = new ethers.BrowserProvider(window.ethereum);
-    return await provider.getSigner();
-  }, []);
-
-  // ── Helper: ambil contract instance (read-only, no signer) ──────────────
-  const getReadContract = useCallback(async () => {
-    const provider = getProvider();
+export default function useContract(provider, signer, account) {
+  // Memoize factory contract instance
+  const factoryContract = useMemo(() => {
     if (!provider) return null;
-    return new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, provider);
-  }, [getProvider]);
+    const address = contractsData.factoryAddress;
+    const abi = contractsData.factoryAbi;
+    // Use signer if available, otherwise fallback to provider for read-only access
+    const runner = signer || provider;
+    return new ethers.Contract(address, abi, runner);
+  }, [provider, signer]);
 
-  // ── Helper: ambil contract instance dengan signer (untuk write) ─────────
-  const getWriteContract = useCallback(async () => {
-    const signer = await getSigner();
-    if (!signer) return null;
-    return new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
-  }, [getSigner]);
+  // Create simple escrow instance helper
+  const getEscrowContract = useCallback((escrowAddress) => {
+    if (!provider) return null;
+    const runner = signer || provider;
+    return new ethers.Contract(escrowAddress, contractsData.escrowAbi, runner);
+  }, [provider, signer]);
 
-  // ── READ: Fetch escrow details ──────────────────────────────────────────
-  const fetchEscrowDetails = useCallback(async () => {
+  // Create Escrow Transaction
+  const createEscrow = useCallback(async (seller, arbiter, durationSeconds, feePercent) => {
+    if (!factoryContract) throw new Error('Contract not initialized');
+    
+    // Call contract
+    const tx = await factoryContract.createEscrow(
+      seller,
+      arbiter,
+      durationSeconds,
+      feePercent
+    );
+    const receipt = await tx.wait();
+    
+    // Parse EscrowCreated event
+    const event = receipt.logs
+      .map((log) => {
+        try {
+          return factoryContract.interface.parseLog(log);
+        } catch (e) {
+          return null;
+        }
+      })
+      .find((parsed) => parsed && parsed.name === 'EscrowCreated');
+
+    return event ? event.args.escrowAddress : null;
+  }, [factoryContract]);
+
+  // Fetch escrow contracts associated with the user
+  const fetchUserEscrows = useCallback(async () => {
+    if (!factoryContract || !account) return [];
     try {
-      setIsLoading(true);
-      setReadError(null);
+      const addresses = await factoryContract.getEscrowsByUser(account);
+      
+      const escrowsData = await Promise.all(
+        addresses.map(async (address) => {
+          try {
+            const escrowContract = getEscrowContract(address);
+            const details = await escrowContract.getEscrowDetails();
+            const bal = await provider.getBalance(address);
 
-      const contract = await getReadContract();
-      if (!contract) {
-        setReadError("MetaMask tidak tersedia. Silakan install MetaMask.");
-        return null;
-      }
+            return {
+              address,
+              buyer: details._buyer,
+              seller: details._seller,
+              arbiter: details._arbiter,
+              balance: ethers.formatEther(bal),
+              state: Number(details._state),
+              deadline: Number(details._deadline),
+              feePercent: Number(details._arbiterFeePercent)
+            };
+          } catch (err) {
+            console.error(`Error fetching details for escrow ${address}:`, err);
+            return null;
+          }
+        })
+      );
 
-      const details = await contract.getEscrowDetails();
-      const parsed = {
-        buyer: details._buyer,
-        seller: details._seller,
-        arbiter: details._arbiter,
-        depositAmount: details._depositAmount,
-        state: Number(details._state),
-        deadline: details._deadline,
-        arbiterFeePercent: Number(details._arbiterFeePercent),
-      };
-
-      setEscrowData(parsed);
-      return parsed;
+      // Filter out failed queries and sort by newest first (reverse of array)
+      return escrowsData.filter(Boolean).reverse();
     } catch (err) {
-      setReadError(parseContractError(err));
-      return null;
-    } finally {
-      setIsLoading(false);
+      console.error('Error fetching user escrows:', err);
+      return [];
     }
-  }, [getReadContract]);
+  }, [factoryContract, account, getEscrowContract, provider]);
 
-  // ── READ: Fetch contract balance ────────────────────────────────────────
-  const fetchBalance = useCallback(async () => {
+  // Deposit funds into escrow contract
+  const deposit = useCallback(async (escrowAddress, amountEth) => {
+    const escrowContract = getEscrowContract(escrowAddress);
+    if (!escrowContract) throw new Error('Contract not initialized');
+    
+    const value = ethers.parseEther(amountEth);
+    const tx = await escrowContract.deposit({ value });
+    return await tx.wait();
+  }, [getEscrowContract]);
+
+  // Release funds to Seller (Buyer action)
+  const releaseFunds = useCallback(async (escrowAddress) => {
+    const escrowContract = getEscrowContract(escrowAddress);
+    if (!escrowContract) throw new Error('Contract not initialized');
+    
+    const tx = await escrowContract.releaseFunds();
+    return await tx.wait();
+  }, [getEscrowContract]);
+
+  // Raise dispute (Buyer/Seller action)
+  const raiseDispute = useCallback(async (escrowAddress) => {
+    const escrowContract = getEscrowContract(escrowAddress);
+    if (!escrowContract) throw new Error('Contract not initialized');
+    
+    const tx = await escrowContract.raiseDispute();
+    return await tx.wait();
+  }, [getEscrowContract]);
+
+  // Refund buyer after timeout
+  const refundAfterTimeout = useCallback(async (escrowAddress) => {
+    const escrowContract = getEscrowContract(escrowAddress);
+    if (!escrowContract) throw new Error('Contract not initialized');
+    
+    const tx = await escrowContract.refundAfterTimeout();
+    return await tx.wait();
+  }, [getEscrowContract]);
+
+  // Resolve dispute (Arbiter action)
+  const resolveDispute = useCallback(async (escrowAddress, releaseToSeller) => {
+    const escrowContract = getEscrowContract(escrowAddress);
+    if (!escrowContract) throw new Error('Contract not initialized');
+    
+    const tx = await escrowContract.resolveDispute(releaseToSeller);
+    return await tx.wait();
+  }, [getEscrowContract]);
+
+  // Fetch on-chain events for a specific escrow contract
+  const fetchEscrowEvents = useCallback(async (escrowAddress) => {
+    if (!provider) return [];
     try {
-      const contract = await getReadContract();
-      if (!contract) return null;
-      const balance = await contract.getBalance();
-      return balance;
-    } catch {
-      return null;
+      const escrowContract = getEscrowContract(escrowAddress);
+      const filter = {
+        address: escrowAddress,
+        fromBlock: 0,
+        toBlock: 'latest'
+      };
+      
+      const logs = await provider.getLogs(filter);
+      
+      const parsedLogs = logs.map((log) => {
+        try {
+          const parsed = escrowContract.interface.parseLog(log);
+          return {
+            name: parsed.name,
+            args: parsed.args,
+            blockNumber: Number(log.blockNumber),
+            transactionHash: log.transactionHash
+          };
+        } catch (e) {
+          return null;
+        }
+      }).filter(Boolean);
+
+      return parsedLogs;
+    } catch (err) {
+      console.error('Error fetching escrow events:', err);
+      return [];
     }
-  }, [getReadContract]);
-
-  // ── READ: Fetch isExpired ───────────────────────────────────────────────
-  const fetchIsExpired = useCallback(async () => {
-    try {
-      const contract = await getReadContract();
-      if (!contract) return false;
-      const expired = await contract.isExpired();
-      return expired;
-    } catch {
-      return false;
-    }
-  }, [getReadContract]);
-
-  // ── Refresh all data (panggil setelah write sukses) ─────────────────────
-  const refreshAllData = useCallback(async () => {
-    await fetchEscrowDetails();
-  }, [fetchEscrowDetails]);
-
-  // ── WRITE: Generic write handler ────────────────────────────────────────
-  const executeWrite = useCallback(
-    async (actionKey, writeFn) => {
-      // Reset state
-      setTxStatus("pending");
-      setTxError(null);
-      setTxSuccessMsg(null);
-      setLastAction(actionKey);
-
-      try {
-        await writeFn(); // writeFn harus sudah handle await tx.wait()
-        setTxStatus("success");
-        setTxSuccessMsg(getSuccessMessage(actionKey));
-
-        // Refresh data dari blockchain setelah transaksi berhasil
-        await refreshAllData();
-
-        // Auto-clear success toast setelah 6 detik
-        setTimeout(() => {
-          setTxStatus("idle");
-          setTxSuccessMsg(null);
-          setLastAction(null);
-        }, 6000);
-      } catch (err) {
-        setTxStatus("failed");
-        setTxError(parseContractError(err));
-
-        // Auto-clear error toast setelah 8 detik
-        setTimeout(() => {
-          setTxStatus("idle");
-          setTxError(null);
-          setLastAction(null);
-        }, 8000);
-      }
-    },
-    [refreshAllData]
-  );
-
-  // ── WRITE: Deposit ──────────────────────────────────────────────────────
-  const deposit = useCallback(
-    async (amountETH) => {
-      await executeWrite("deposit", async () => {
-        const contract = await getWriteContract();
-        if (!contract) throw new Error("MetaMask tidak tersedia");
-
-        const tx = await contract.deposit({
-          value: ethers.parseEther(amountETH),
-        });
-        await tx.wait();
-      });
-    },
-    [executeWrite, getWriteContract]
-  );
-
-  // ── WRITE: Release Funds ────────────────────────────────────────────────
-  const releaseFunds = useCallback(async () => {
-    await executeWrite("release", async () => {
-      const contract = await getWriteContract();
-      if (!contract) throw new Error("MetaMask tidak tersedia");
-
-      const tx = await contract.releaseFunds();
-      await tx.wait();
-    });
-  }, [executeWrite, getWriteContract]);
-
-  // ── WRITE: Raise Dispute ────────────────────────────────────────────────
-  const raiseDispute = useCallback(async () => {
-    await executeWrite("dispute", async () => {
-      const contract = await getWriteContract();
-      if (!contract) throw new Error("MetaMask tidak tersedia");
-
-      const tx = await contract.raiseDispute();
-      await tx.wait();
-    });
-  }, [executeWrite, getWriteContract]);
-
-  // ── WRITE: Refund After Timeout ─────────────────────────────────────────
-  const refundAfterTimeout = useCallback(async () => {
-    await executeWrite("refund", async () => {
-      const contract = await getWriteContract();
-      if (!contract) throw new Error("MetaMask tidak tersedia");
-
-      const tx = await contract.refundAfterTimeout();
-      await tx.wait();
-    });
-  }, [executeWrite, getWriteContract]);
-
-  // ── WRITE: Resolve Dispute ──────────────────────────────────────────────
-  const resolveDispute = useCallback(
-    async (releaseToSeller) => {
-      const key = releaseToSeller ? "resolveSeller" : "resolveBuyer";
-      await executeWrite(key, async () => {
-        const contract = await getWriteContract();
-        if (!contract) throw new Error("MetaMask tidak tersedia");
-
-        const tx = await contract.resolveDispute(releaseToSeller);
-        await tx.wait();
-      });
-    },
-    [executeWrite, getWriteContract]
-  );
-
-  // ── Auto-fetch data saat hook pertama kali mount ────────────────────────
-  useEffect(() => {
-    fetchEscrowDetails();
-  }, [fetchEscrowDetails]);
+  }, [provider, getEscrowContract]);
 
   return {
-    // Read data
-    escrowData,
-    isLoading,
-    readError,
-
-    // Write functions
+    createEscrow,
+    fetchUserEscrows,
     deposit,
     releaseFunds,
     raiseDispute,
     refundAfterTimeout,
     resolveDispute,
-
-    // Transaction state
-    txStatus,
-    txError,
-    txSuccessMsg,
-    lastAction,
-
-    // Refresh
-    refreshAllData,
+    fetchEscrowEvents
   };
 }
